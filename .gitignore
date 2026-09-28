@@ -1,4 +1,10 @@
-# Miscellaneous
+.env
+.env.*
+node_modules/
+.DS_Store
+dist/
+build/
+*.log# Miscellaneous
 *.class
 *.log
 *.pyc

@@ -376,6 +376,25 @@ class _POSScreenState extends State<POSScreen> {
       cart.setAmountPaid(tender);
     }
 
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Saving invoice...'),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
     final invoice = await cart.checkout(
       cashierName: auth.userName,
       cashierId: auth.userId,
@@ -384,16 +403,44 @@ class _POSScreenState extends State<POSScreen> {
     if (invoice != null && context.mounted) {
       _cashTenderController.clear();
       _discountController.clear();
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white, size: 20),
+              SizedBox(width: 10),
+              Text('Invoice saved successfully.'),
+            ],
+          ),
+          backgroundColor: Colors.teal,
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
       await showDialog(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => InvoiceDialog(invoice: invoice),
       );
-    } else if (cart.lastError != null && context.mounted) {
+    } else if (context.mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(cart.lastError!),
-          backgroundColor: Colors.red,
+          content: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  cart.lastError ?? 'Unable to save invoice. Please check your connection and try again.',
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 4),
           behavior: SnackBarBehavior.floating,
         ),
       );

@@ -1,0 +1,21 @@
+{
+  "name": "smart-gst-cloud-backend",
+  "version": "1.0.0",
+  "description": "Secure AWS DynamoDB + Firebase Auth backend for SMART GST POS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "create-table": "node scripts/createTable.js",
+    "test": "node test/api.test.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.650.0",
+    "@aws-sdk/lib-dynamodb": "^3.650.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "firebase-admin": "^12.5.0"
+  },
+  "devDependencies": {}
+}

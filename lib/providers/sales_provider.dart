@@ -1,17 +1,20 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/sale_invoice.dart';
+import '../services/cloud_invoice_service.dart';
 import '../services/firestore_service.dart';
 
 enum DateRangeFilter { today, yesterday, last7Days, last30Days, custom, all }
 
 class SalesProvider with ChangeNotifier {
   final IPOSService _service;
+  final CloudInvoiceService _cloudService;
   StreamSubscription<List<SaleInvoice>>? _subscription;
 
   List<SaleInvoice> _invoices = [];
-  final bool _isLoading = false;
+  bool _isLoading = false;
   String? _errorMessage;
+  DateTime? _lastSyncedAt;
 
   String _searchQuery = '';
   DateRangeFilter _dateFilter = DateRangeFilter.all;
@@ -19,13 +22,19 @@ class SalesProvider with ChangeNotifier {
   PaymentMethod? _paymentMethodFilter;
   bool _hideCancelled = false;
 
-  SalesProvider({required IPOSService service}) : _service = service {
+  SalesProvider({
+    required IPOSService service,
+    CloudInvoiceService? cloudService,
+  })  : _service = service,
+        _cloudService = cloudService ?? CloudInvoiceService.instance {
     _initStream();
+    refreshFromCloud();
   }
 
   List<SaleInvoice> get allInvoices => _invoices;
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
+  DateTime? get lastSyncedAt => _lastSyncedAt;
   String get searchQuery => _searchQuery;
   DateRangeFilter get dateFilter => _dateFilter;
   DateTimeRange? get customDateRange => _customDateRange;
@@ -34,16 +43,51 @@ class SalesProvider with ChangeNotifier {
 
   void _initStream() {
     _subscription = _service.getInvoicesStream().listen(
-      (invoices) {
-        _invoices = invoices;
-        _errorMessage = null;
-        notifyListeners();
+      (localInvoices) {
+        if (localInvoices.isNotEmpty) {
+          _mergeInvoices(localInvoices);
+        }
       },
       onError: (err) {
-        _errorMessage = err.toString();
-        notifyListeners();
+        debugPrint('Local invoice stream notice: $err');
       },
     );
+  }
+
+  /// Phase 12: Fetch Invoices from AWS DynamoDB via Cloud API
+  Future<void> refreshFromCloud() async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final cloudInvoices = await _cloudService.fetchInvoices();
+      _mergeInvoices(cloudInvoices);
+      _lastSyncedAt = DateTime.now();
+      _isLoading = false;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Cloud sales refresh notice: $e');
+      _isLoading = false;
+      // If cloud is unreachable, keep local data
+      notifyListeners();
+    }
+  }
+
+  void _mergeInvoices(List<SaleInvoice> newInvoices) {
+    final Map<String, SaleInvoice> map = {};
+    for (final inv in _invoices) {
+      final key = inv.invoiceNumber.isNotEmpty ? inv.invoiceNumber : inv.id;
+      map[key] = inv;
+    }
+    for (final inv in newInvoices) {
+      final key = inv.invoiceNumber.isNotEmpty ? inv.invoiceNumber : inv.id;
+      map[key] = inv;
+    }
+    final merged = map.values.toList();
+    merged.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _invoices = merged;
+    notifyListeners();
   }
 
   List<SaleInvoice> get filteredInvoices {
@@ -178,6 +222,7 @@ class SalesProvider with ChangeNotifier {
 
   Future<void> cancelInvoice(String invoiceId, String reason, {String? userId, String? userName}) async {
     await _service.cancelInvoice(invoiceId, reason, userId: userId, userName: userName);
+    await refreshFromCloud();
   }
 
   @override

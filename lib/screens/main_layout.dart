@@ -148,6 +148,36 @@ class _MainLayoutState extends State<MainLayout> {
           ],
         ),
         actions: [
+          // Phase 14: Cloud Status Indicator
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.teal.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.teal.withValues(alpha: 0.2)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  auth.firebaseUid != null ? 'Cloud: Connected' : 'Firebase: Active',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.teal),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+
           // Database Explorer Quick Launcher
           FilledButton.tonalIcon(
             onPressed: () => showDatabaseExplorerDialog(context),

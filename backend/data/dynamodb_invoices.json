@@ -1,0 +1,38 @@
+{
+  "user_a_123": [
+    {
+      "invoiceNumber": "INV-A-001",
+      "customerName": "Ramesh Kumar",
+      "customerPhone": "9876543210",
+      "grandTotal": 1050.0,
+      "subtotal": 1000.0,
+      "totalGst": 50.0,
+      "paymentMethod": "cash",
+      "items": [
+        {
+          "productId": "p1",
+          "productName": "Tea 1kg",
+          "quantity": 2,
+          "totalAmount": 1000.0
+        }
+      ],
+      "userId": "user_a_123",
+      "invoiceId": "inv_1790704547751",
+      "createdAt": "2026-09-29T17:55:47Z",
+      "updatedAt": "2026-09-29T17:55:47Z"
+    }
+  ],
+  "user_b_456": [
+    {
+      "invoiceNumber": "INV-B-001",
+      "customerName": "Suresh Raina",
+      "grandTotal": 2100.0,
+      "paymentMethod": "upi",
+      "items": [],
+      "userId": "user_b_456",
+      "invoiceId": "inv_1790704547754",
+      "createdAt": "2026-09-29T17:55:47Z",
+      "updatedAt": "2026-09-29T17:55:47Z"
+    }
+  ]
+}

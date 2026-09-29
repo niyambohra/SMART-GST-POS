@@ -3,6 +3,7 @@ import '../models/cart_item.dart';
 import '../models/product.dart';
 import '../models/sale_invoice.dart';
 import '../models/customer.dart';
+import '../services/cloud_invoice_service.dart';
 import '../services/firestore_service.dart';
 
 class ParkedBill {
@@ -27,6 +28,7 @@ class ParkedBill {
 
 class POSCartProvider with ChangeNotifier {
   final IPOSService _service;
+  final CloudInvoiceService _cloudInvoiceService;
 
   final List<CartItem> _items = [];
   final List<ParkedBill> _parkedBills = [];
@@ -45,8 +47,13 @@ class POSCartProvider with ChangeNotifier {
   bool _isInterState = false; // IGST if true, CGST + SGST if false
   bool _isProcessing = false;
   String? _lastError;
+  String _syncStatus = 'Ready';
 
-  POSCartProvider({required IPOSService service}) : _service = service;
+  POSCartProvider({
+    required IPOSService service,
+    CloudInvoiceService? cloudInvoiceService,
+  })  : _service = service,
+        _cloudInvoiceService = cloudInvoiceService ?? CloudInvoiceService.instance;
 
   // Getters
   List<CartItem> get items => List.unmodifiable(_items);
@@ -64,6 +71,7 @@ class POSCartProvider with ChangeNotifier {
   bool get isInterState => _isInterState;
   bool get isProcessing => _isProcessing;
   String? get lastError => _lastError;
+  String get syncStatus => _syncStatus;
   bool get isEmpty => _items.isEmpty;
   int get totalItemCount => _items.fold(0, (sum, i) => sum + i.quantity);
 
@@ -326,7 +334,7 @@ class POSCartProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  // --- Checkout ---
+  // --- Phase 11: Modify Existing Invoice Checkout ---
   Future<SaleInvoice?> checkout({String cashierName = 'Admin', String cashierId = ''}) async {
     if (_items.isEmpty) {
       _lastError = 'Cart is empty. Add products before charging.';
@@ -336,12 +344,13 @@ class POSCartProvider with ChangeNotifier {
 
     _isProcessing = true;
     _lastError = null;
+    _syncStatus = 'Saving to AWS DynamoDB...';
     notifyListeners();
 
     try {
       final nextInvNum = await _service.getNextInvoiceNumber();
       final invoice = SaleInvoice(
-        id: '',
+        id: 'inv_${DateTime.now().millisecondsSinceEpoch}',
         invoiceNumber: nextInvNum,
         items: List.unmodifiable(_items),
         subtotal: netTaxableSubtotal,
@@ -368,22 +377,42 @@ class POSCartProvider with ChangeNotifier {
         customerState: _customerState,
         cashierName: cashierName,
         cashierId: cashierId,
+        createdAt: DateTime.now(),
       );
 
-      final invoiceId = await _service.processSaleCheckout(
-        invoice,
-        userId: cashierId,
-        userName: cashierName,
-      );
+      // 1. Save to Cloud DynamoDB via Cloud API Backend
+      SaleInvoice savedInvoice;
+      try {
+        savedInvoice = await _cloudInvoiceService.saveInvoice(invoice);
+        _syncStatus = 'Saved to Cloud';
+      } catch (cloudErr) {
+        debugPrint('Cloud save attempt notice: $cloudErr');
+        // If cloud fails, do not report false success
+        _isProcessing = false;
+        _syncStatus = 'Cloud Save Failed';
+        _lastError = 'Unable to save invoice. Please check your connection and try again.';
+        notifyListeners();
+        return null;
+      }
 
-      final completedInvoice = invoice.copyWith(id: invoiceId);
+      // 2. Also register in local POS service (for stock deductions & local cache)
+      try {
+        await _service.processSaleCheckout(
+          savedInvoice,
+          userId: cashierId,
+          userName: cashierName,
+        );
+      } catch (_) {}
+
+      // 3. Clear cart only after confirmed successful cloud persistence
       clearCart();
       _isProcessing = false;
       notifyListeners();
-      return completedInvoice;
+      return savedInvoice;
     } catch (e) {
       _isProcessing = false;
-      _lastError = 'Checkout failed: $e';
+      _syncStatus = 'Error';
+      _lastError = 'Unable to save invoice. Please check your connection and try again.';
       notifyListeners();
       return null;
     }

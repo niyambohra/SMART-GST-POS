@@ -159,7 +159,7 @@ class SaleInvoice {
       subtotal: (map['subtotal'] as num?)?.toDouble() ?? 0.0,
       discountAmount: (map['discountAmount'] as num?)?.toDouble() ?? 0.0,
       discountPercent: (map['discountPercent'] as num?)?.toDouble() ?? 0.0,
-      totalGst: (map['totalGst'] as num?)?.toDouble() ?? 0.0,
+      totalGst: (map['totalGst'] as num?)?.toDouble() ?? (map['gstTotal'] as num?)?.toDouble() ?? 0.0,
       totalCgst: (map['totalCgst'] as num?)?.toDouble() ?? 0.0,
       totalSgst: (map['totalSgst'] as num?)?.toDouble() ?? 0.0,
       totalIgst: (map['totalIgst'] as num?)?.toDouble() ?? 0.0,

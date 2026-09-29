@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/foundation.dart';
 import '../models/isar/user_model.dart';
 import '../services/auth_service.dart';
@@ -6,10 +8,12 @@ import '../services/firebase_auth_service.dart';
 class AuthProvider with ChangeNotifier {
   final AuthService _authService;
   final FirebaseAuthService _firebaseAuth;
+  StreamSubscription<fb.User?>? _fbAuthSub;
+
   UserItem? _activeUser;
   bool _isLoading = false;
   String? _errorMessage;
-  String _authProviderType = 'Firebase & Local NoSQL';
+  String _authProviderType = 'Firebase Auth';
 
   AuthProvider({
     AuthService? authService,
@@ -28,7 +32,8 @@ class AuthProvider with ChangeNotifier {
   UserRole get currentRole => _activeUser?.role ?? UserRole.owner;
   String get userName => _activeUser?.fullName ?? 'Store Owner';
   String get userEmail => _activeUser?.email ?? 'owner@smartgstmart.com';
-  String get userId => _activeUser?.uid ?? 'user_owner_01';
+  String get userId => _activeUser?.uid ?? (_firebaseAuth.currentUid ?? 'user_owner_01');
+  String? get firebaseUid => _firebaseAuth.currentUid;
 
   bool get isOwner => currentRole == UserRole.owner;
   bool get isAdmin => currentRole == UserRole.owner || currentRole == UserRole.admin;
@@ -51,22 +56,35 @@ class AuthProvider with ChangeNotifier {
 
   Future<void> _initAuth() async {
     try {
-      // Check Firebase currentUser first
-      final fbUser = _firebaseAuth.currentFirebaseUser;
+      final fbUser = _firebaseAuth.currentUser;
       if (fbUser != null) {
         _activeUser = _firebaseAuth.mapFirebaseUserToUserItem(fbUser);
         _authProviderType = 'Firebase Auth';
       } else {
         _activeUser = _authService.currentUser;
-        _authProviderType = 'Local NoSQL PBKDF2';
+        if (_activeUser != null) {
+          _authProviderType = 'Local NoSQL PBKDF2';
+        }
       }
     } catch (_) {}
+
+    // Listen to Firebase Auth state changes
+    _fbAuthSub = _firebaseAuth.authStateChanges.listen((fbUser) {
+      if (fbUser != null) {
+        _activeUser = _firebaseAuth.mapFirebaseUserToUserItem(fbUser);
+        _authProviderType = 'Firebase Auth';
+      } else if (_authService.currentUser == null && _authProviderType == 'Firebase Auth') {
+        _activeUser = null;
+      }
+      notifyListeners();
+    });
+
     notifyListeners();
   }
 
   Future<bool> hasAnyUser() async {
     try {
-      if (_firebaseAuth.currentFirebaseUser != null) return true;
+      if (_firebaseAuth.currentUser != null) return true;
       return await _authService.hasAnyUser();
     } catch (_) {
       return true;
@@ -79,10 +97,10 @@ class AuthProvider with ChangeNotifier {
     _errorMessage = null;
     notifyListeners();
 
-    // 1. Try Firebase Auth (if valid email format)
+    // 1. Try Firebase Auth
     if (emailOrPhone.contains('@')) {
       try {
-        final cred = await _firebaseAuth.signInWithEmailPassword(
+        final cred = await _firebaseAuth.login(
           email: emailOrPhone,
           password: password,
         );
@@ -93,8 +111,13 @@ class AuthProvider with ChangeNotifier {
           notifyListeners();
           return true;
         }
+      } on fb.FirebaseAuthException catch (fbError) {
+        _isLoading = false;
+        _errorMessage = fbError.message ?? 'Firebase authentication failed (${fbError.code}).';
+        notifyListeners();
+        return false;
       } catch (fbError) {
-        debugPrint('Firebase Auth sign in attempt failed: $fbError - trying local DB fallback');
+        debugPrint('Firebase Auth sign in attempt notice: $fbError');
       }
     }
 
@@ -106,7 +129,7 @@ class AuthProvider with ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      // 3. Demo / Preview mode fallback for instant testing
+      // 3. Demo / Preview fallback for testing without credentials
       if (emailOrPhone.isNotEmpty && password.isNotEmpty) {
         final query = emailOrPhone.toLowerCase();
         final role = query.contains('cashier')
@@ -161,7 +184,7 @@ class AuthProvider with ChangeNotifier {
 
     // 1. Register with Firebase Auth
     try {
-      final cred = await _firebaseAuth.registerWithEmailPassword(
+      final cred = await _firebaseAuth.register(
         email: email,
         password: password,
         displayName: fullName,
@@ -170,8 +193,13 @@ class AuthProvider with ChangeNotifier {
         _activeUser = _firebaseAuth.mapFirebaseUserToUserItem(cred.user!, role: UserRole.owner);
         _authProviderType = 'Firebase Auth';
       }
+    } on fb.FirebaseAuthException catch (fbErr) {
+      _isLoading = false;
+      _errorMessage = fbErr.message ?? 'Firebase registration failed (${fbErr.code}).';
+      notifyListeners();
+      return false;
     } catch (fbErr) {
-      debugPrint('Firebase registration note: $fbErr');
+      debugPrint('Firebase registration notice: $fbErr');
     }
 
     // 2. Also save to local Isar NoSQL for offline capability
@@ -185,7 +213,7 @@ class AuthProvider with ChangeNotifier {
       _activeUser ??= localUser;
     } catch (_) {
       _activeUser ??= UserItem()
-        ..uid = 'owner_01'
+        ..uid = _activeUser?.uid ?? 'owner_01'
         ..fullName = fullName.trim()
         ..email = email.trim()
         ..phone = phone.trim()
@@ -204,7 +232,7 @@ class AuthProvider with ChangeNotifier {
 
   Future<void> logout() async {
     try {
-      await _firebaseAuth.signOut();
+      await _firebaseAuth.logout();
     } catch (_) {}
     try {
       await _authService.logout();
@@ -238,5 +266,11 @@ class AuthProvider with ChangeNotifier {
         ..updatedAt = DateTime.now();
       notifyListeners();
     }
+  }
+
+  @override
+  void dispose() {
+    _fbAuthSub?.cancel();
+    super.dispose();
   }
 }

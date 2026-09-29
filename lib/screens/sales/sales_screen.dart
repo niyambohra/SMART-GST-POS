@@ -78,8 +78,36 @@ class _SalesScreenState extends State<SalesScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Transaction ledger, tax receipts, and payment settlements',
+                        'Transaction ledger, tax receipts, and payment settlements from AWS DynamoDB',
                         style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: sales.isLoading
+                            ? null
+                            : () async {
+                                await sales.refreshFromCloud();
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('✓ Invoices refreshed from AWS DynamoDB'),
+                                      duration: Duration(seconds: 2),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                }
+                              },
+                        icon: sales.isLoading
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.refresh, size: 18),
+                        label: Text(sales.isLoading ? 'Syncing...' : 'Refresh from AWS'),
                       ),
                     ],
                   ),

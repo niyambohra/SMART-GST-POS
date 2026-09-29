@@ -87,4 +87,19 @@ class AppValidators {
     }
     return null;
   }
+
+  /// Validates email address
+  static String? validateEmail(String? value, {bool required = false}) {
+    if (value == null || value.trim().isEmpty) {
+      if (required) return 'Email address is required';
+      return null;
+    }
+    final trimmed = value.trim();
+    final emailRegex = RegExp(r'^[\w\.-]+@([\w-]+\.)+[\w-]{2,4}$');
+    if (!emailRegex.hasMatch(trimmed)) {
+      return 'Enter a valid email address';
+    }
+    return null;
+  }
 }
+

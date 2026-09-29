@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/staff_member.dart';
+import '../models/isar/user_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/business_settings_provider.dart';
 import 'dashboard/dashboard_screen.dart';
@@ -13,6 +13,7 @@ import 'ledger/ledger_screen.dart';
 import 'staff/staff_screen.dart';
 import 'audit/audit_log_screen.dart';
 import 'settings/settings_screen.dart';
+import '../widgets/database_explorer_dialog.dart';
 
 class MainLayout extends StatefulWidget {
   const MainLayout({super.key});
@@ -147,6 +148,19 @@ class _MainLayoutState extends State<MainLayout> {
           ],
         ),
         actions: [
+          // Database Explorer Quick Launcher
+          FilledButton.tonalIcon(
+            onPressed: () => showDatabaseExplorerDialog(context),
+            icon: const Icon(Icons.storage, size: 16),
+            label: const Text('Database Explorer & Export', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              backgroundColor: Colors.teal.withValues(alpha: 0.12),
+              foregroundColor: Colors.teal,
+            ),
+          ),
+          const SizedBox(width: 8),
+
           // Live Role Switcher Pill for Testing / Persona Simulation
           Container(
             margin: const EdgeInsets.symmetric(vertical: 8),
@@ -169,12 +183,16 @@ class _MainLayoutState extends State<MainLayout> {
                   icon: const Icon(Icons.arrow_drop_down, color: Colors.teal, size: 18),
                   items: const [
                     DropdownMenuItem(
+                      value: UserRole.owner,
+                      child: Text('Owner', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
+                    DropdownMenuItem(
                       value: UserRole.admin,
-                      child: Text('Admin / Owner', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      child: Text('Admin', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                     ),
                     DropdownMenuItem(
                       value: UserRole.manager,
-                      child: Text('Store Manager', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      child: Text('Manager', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                     ),
                     DropdownMenuItem(
                       value: UserRole.cashier,

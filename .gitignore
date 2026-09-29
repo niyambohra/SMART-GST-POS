@@ -52,3 +52,9 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Local database & export storage
+database_data/
+backups/
+exports/
+

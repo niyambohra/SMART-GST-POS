@@ -1,8 +1,21 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../providers/business_settings_provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/inventory_provider.dart';
+import '../../providers/category_provider.dart';
+import '../../providers/customer_provider.dart';
+import '../../providers/sales_provider.dart';
+import '../../providers/audit_log_provider.dart';
+import '../../providers/aws_dynamodb_provider.dart';
+import '../../services/export_service.dart';
+import '../../services/backup_service.dart';
 import '../../utils/validators.dart';
+import '../../widgets/database_explorer_dialog.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -39,7 +52,16 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
   // Payment Controllers
   late TextEditingController _upiIdController;
 
+  // AWS DynamoDB Controllers
+  late TextEditingController _awsAccessKeyController;
+  late TextEditingController _awsSecretKeyController;
+  late TextEditingController _awsRegionController;
+  late TextEditingController _awsTablePrefixController;
+  bool _obscureAwsSecret = true;
+
   bool _initialized = false;
+  bool _isProcessingBackup = false;
+  String? _lastOperationResult;
 
   @override
   void initState() {
@@ -71,6 +93,12 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
     final pay = settings.paymentSettings;
     _upiIdController = TextEditingController(text: pay.upiId);
+
+    final aws = context.read<AWSDynamoDBProvider>().config;
+    _awsAccessKeyController = TextEditingController(text: aws.accessKeyId);
+    _awsSecretKeyController = TextEditingController(text: aws.secretAccessKey);
+    _awsRegionController = TextEditingController(text: aws.region);
+    _awsTablePrefixController = TextEditingController(text: aws.tablePrefix);
   }
 
   @override
@@ -93,12 +121,17 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
       _invoiceStartController.dispose();
       _newGstRateController.dispose();
       _upiIdController.dispose();
+      _awsAccessKeyController.dispose();
+      _awsSecretKeyController.dispose();
+      _awsRegionController.dispose();
+      _awsTablePrefixController.dispose();
     }
     super.dispose();
   }
 
   void _saveProfile() async {
     if (!_profileFormKey.currentState!.validate()) return;
+
     final settings = context.read<BusinessSettingsProvider>();
     final auth = context.read<AuthProvider>();
 
@@ -116,15 +149,288 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
       currencySymbol: _currencySymbolController.text.trim(),
       currencyCode: _currencyCodeController.text.trim(),
       invoicePrefix: _invoicePrefixController.text.trim(),
-      invoiceStartingNumber: int.tryParse(_invoiceStartController.text.trim()) ?? 1001,
+      invoiceStartingNumber: int.tryParse(_invoiceStartController.text) ?? 1000,
       defaultGstType: _defaultGstType,
       defaultPaymentMethod: _defaultPaymentMethod,
     );
 
-    final success = await settings.saveBusinessProfile(updated, userId: auth.userId, userName: auth.userName);
-    if (mounted && success) {
+    await settings.saveBusinessProfile(updated, userId: auth.userId, userName: auth.userName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Business Profile updated successfully!'),
+        backgroundColor: Colors.teal,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _handleCreateBackup() async {
+    setState(() => _isProcessingBackup = true);
+    try {
+      if (!kIsWeb) {
+        final file = await BackupRestoreService().createBackup();
+        setState(() {
+          _isProcessingBackup = false;
+          _lastOperationResult = 'Backup created at: ${file.path}';
+        });
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ Full database backup saved to: ${file.path.split("/").last}'),
+            backgroundColor: Colors.green[700],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        // Web export / preview snapshot
+        final inv = context.read<InventoryProvider>();
+        final sales = context.read<SalesProvider>();
+        final cust = context.read<CustomerProvider>();
+        final cat = context.read<CategoryProvider>();
+
+        final data = {
+          'version': '1.0.0',
+          'exportedAt': DateTime.now().toIso8601String(),
+          'system': 'SMART GST Mart - Local NoSQL',
+          'productsCount': inv.allProducts.length,
+          'invoicesCount': sales.allInvoices.length,
+          'customersCount': cust.allCustomers.length,
+          'categoriesCount': cat.categories.length,
+        };
+        final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
+        await Clipboard.setData(ClipboardData(text: jsonStr));
+
+        setState(() {
+          _isProcessingBackup = false;
+          _lastOperationResult = 'Database Snapshot JSON copied to clipboard (${inv.allProducts.length} products, ${sales.allInvoices.length} invoices)';
+        });
+        if (!mounted) return;
+        _showDataPreviewDialog('Database Backup Snapshot (JSON)', jsonStr);
+      }
+    } catch (e) {
+      setState(() => _isProcessingBackup = false);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Business Profile saved successfully!'), backgroundColor: Colors.teal),
+        SnackBar(content: Text('Backup notice: $e'), backgroundColor: Colors.orange),
+      );
+    }
+  }
+
+  void _handleExportCsv(String type) async {
+    setState(() => _isProcessingBackup = true);
+    try {
+      if (!kIsWeb) {
+        final exporter = ExportService();
+        File file;
+        if (type == 'products') {
+          file = await exporter.exportProductsCSV();
+        } else if (type == 'customers') {
+          file = await exporter.exportCustomersCSV();
+        } else if (type == 'invoices') {
+          file = await exporter.exportInvoicesCSV();
+        } else if (type == 'movements') {
+          file = await exporter.exportStockMovementsCSV();
+        } else {
+          file = await exporter.exportAuditLogsCSV();
+        }
+
+        setState(() {
+          _isProcessingBackup = false;
+          _lastOperationResult = 'Exported $type to ${file.path}';
+        });
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ $type exported successfully: ${file.path.split("/").last}'),
+            backgroundColor: Colors.teal,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        // Web preview CSV generator & clipboard copy
+        String csvContent = '';
+        if (type == 'products') {
+          final p = context.read<InventoryProvider>().allProducts;
+          final lines = ['Product ID,Name,SKU,Barcode,Category,Price,GST Rate(%),Stock'];
+          for (final item in p) {
+            lines.add('"${item.id}","${item.name}","${item.sku}","${item.barcode}","${item.category}",${item.price},${item.gstRate},${item.stockQuantity}');
+          }
+          csvContent = lines.join('\n');
+        } else if (type == 'customers') {
+          final c = context.read<CustomerProvider>().allCustomers;
+          final lines = ['Customer ID,Name,Phone,Email,State,GSTIN,Outstanding Balance'];
+          for (final item in c) {
+            lines.add('"${item.id}","${item.name}","${item.phone}","${item.email}","${item.state}","${item.gstin}",${item.outstandingBalance}');
+          }
+          csvContent = lines.join('\n');
+        } else if (type == 'invoices') {
+          final inv = context.read<SalesProvider>().allInvoices;
+          final lines = ['Invoice Number,Date,Customer,Subtotal,Total GST,Grand Total,Payment Method'];
+          for (final item in inv) {
+            lines.add('"${item.invoiceNumber}","${item.createdAt}","${item.customerName}",${item.subtotal},${item.totalGst},${item.grandTotal},"${item.paymentMethod.name}"');
+          }
+          csvContent = lines.join('\n');
+        } else {
+          final logs = context.read<AuditLogProvider>().allLogs;
+          final lines = ['Timestamp,User,Action,Entity,Description'];
+          for (final item in logs) {
+            lines.add('"${item.timestamp}","${item.userName}","${item.action}","${item.entityType}","${item.description}"');
+          }
+          csvContent = lines.join('\n');
+        }
+
+        await Clipboard.setData(ClipboardData(text: csvContent));
+        setState(() {
+          _isProcessingBackup = false;
+          _lastOperationResult = 'Exported $type CSV copied to clipboard!';
+        });
+        if (!mounted) return;
+        _showDataPreviewDialog('$type.csv Export', csvContent);
+      }
+    } catch (e) {
+      setState(() => _isProcessingBackup = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Export failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  void _showDataPreviewDialog(String title, String content) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.file_present, color: Colors.teal),
+            const SizedBox(width: 8),
+            Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SizedBox(
+          width: 600,
+          height: 380,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
+                child: const Row(
+                  children: [
+                    Icon(Icons.check_circle, size: 16, color: Colors.green),
+                    SizedBox(width: 6),
+                    Text('Data generated and copied to your clipboard!', style: TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
+                  child: SingleChildScrollView(
+                    child: SelectableText(content, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          OutlinedButton.icon(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: content));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard!')));
+            },
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('Copy to Clipboard'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDirectDatabaseExplorer(BuildContext context) {
+    showDatabaseExplorerDialog(context);
+  }
+
+  void _saveAwsConfig() async {
+    final aws = context.read<AWSDynamoDBProvider>();
+    final success = await aws.saveConfig(
+      accessKeyId: _awsAccessKeyController.text,
+      secretAccessKey: _awsSecretKeyController.text,
+      region: _awsRegionController.text.isNotEmpty ? _awsRegionController.text : 'ap-south-1',
+      tablePrefix: _awsTablePrefixController.text,
+    );
+
+    if (!mounted) return;
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✓ Connected to AWS DynamoDB in ${aws.config.region}! Found ${aws.remoteTables.length} tables.'),
+          backgroundColor: Colors.green[700],
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ AWS Connection Notice: ${aws.lastError}'),
+          backgroundColor: Colors.orange[800],
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _provisionAwsTables() async {
+    final aws = context.read<AWSDynamoDBProvider>();
+    final ok = await aws.provisionTables();
+    if (!mounted) return;
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✓ Standard DynamoDB tables provisioned successfully (products, categories, customers, invoices, audit_logs)!'),
+          backgroundColor: Colors.teal,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Provisioning error: ${aws.lastError}'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _syncToAwsDynamoDB() async {
+    final aws = context.read<AWSDynamoDBProvider>();
+    final result = await aws.syncToCloud();
+    if (!mounted) return;
+    if (result.isSuccess) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✓ Synced to AWS DynamoDB: ${result.productsSynced} products, ${result.categoriesSynced} categories, ${result.customersSynced} customers, ${result.invoicesSynced} invoices!'),
+          backgroundColor: Colors.green[700],
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sync error: ${result.errorMessage}'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
@@ -133,99 +439,41 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
   Widget build(BuildContext context) {
     final settings = context.watch<BusinessSettingsProvider>();
     final auth = context.watch<AuthProvider>();
-    final theme = Theme.of(context);
-
     _initControllers(settings);
 
     return Scaffold(
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      appBar: AppBar(
+        title: const Text('Store & System Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+        elevation: 0,
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabs: const [
+            Tab(icon: Icon(Icons.store), text: 'Business Profile'),
+            Tab(icon: Icon(Icons.percent), text: 'GST & Taxes'),
+            Tab(icon: Icon(Icons.receipt_long), text: 'Invoice & Print'),
+            Tab(icon: Icon(Icons.payment), text: 'Payment Methods'),
+            Tab(icon: Icon(Icons.inventory), text: 'Inventory Rules'),
+            Tab(icon: Icon(Icons.storage), text: 'Database & Storage'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
         children: [
-          // Header Bar
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Settings & Configuration',
-                      style: theme.textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Admin controls for business identity, GST slabs, invoices, and payment gateways',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                    ),
-                  ],
-                ),
-                if (!auth.isAdmin)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.lock_outline, color: Colors.orange, size: 16),
-                        SizedBox(width: 6),
-                        Text('READ ONLY (Admin required)', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-
-          // Settings Tab Bar
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              labelColor: Colors.teal,
-              indicatorColor: Colors.teal,
-              tabs: const [
-                Tab(icon: Icon(Icons.storefront_outlined, size: 18), text: 'Business Profile'),
-                Tab(icon: Icon(Icons.percent_outlined, size: 18), text: 'GST & Taxes'),
-                Tab(icon: Icon(Icons.receipt_outlined, size: 18), text: 'Invoice Setup'),
-                Tab(icon: Icon(Icons.payment_outlined, size: 18), text: 'Payment Methods'),
-                Tab(icon: Icon(Icons.inventory_2_outlined, size: 18), text: 'Inventory Rules'),
-                Tab(icon: Icon(Icons.cloud_done_outlined, size: 18), text: 'System & Database'),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-
-          // Tab Views
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _buildBusinessProfileTab(settings, auth),
-                _buildGstTab(settings, auth),
-                _buildInvoiceTab(settings, auth),
-                _buildPaymentTab(settings, auth),
-                _buildInventoryTab(settings, auth),
-                _buildSystemTab(settings),
-              ],
-            ),
-          ),
+          _buildProfileTab(settings, auth),
+          _buildGstTab(settings, auth),
+          _buildInvoiceTab(settings, auth),
+          _buildPaymentTab(settings, auth),
+          _buildInventoryTab(settings, auth),
+          _buildSystemTab(settings, auth),
         ],
       ),
     );
   }
 
   // --- Tab 1: Business Profile ---
-  Widget _buildBusinessProfileTab(BusinessSettingsProvider settings, AuthProvider auth) {
+  Widget _buildProfileTab(BusinessSettingsProvider settings, AuthProvider auth) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24.0),
       child: Form(
@@ -239,29 +487,33 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Store & Legal Entity', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Store Identification', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            controller: _storeNameController,
-                            decoration: const InputDecoration(labelText: 'Display Store Name *'),
-                            enabled: auth.isAdmin,
-                            validator: (v) => AppValidators.validateRequired(v, 'Store name'),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: TextFormField(
-                            controller: _legalNameController,
-                            decoration: const InputDecoration(labelText: 'Legal Business Name *'),
-                            enabled: auth.isAdmin,
-                            validator: (v) => AppValidators.validateRequired(v, 'Legal name'),
-                          ),
-                        ),
-                      ],
+                    TextFormField(
+                      controller: _storeNameController,
+                      decoration: const InputDecoration(labelText: 'Trade / Store Name *'),
+                      validator: (v) => AppValidators.validateRequired(v, 'Store Name'),
+                      enabled: auth.isAdmin,
                     ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _legalNameController,
+                      decoration: const InputDecoration(labelText: 'Legal Entity Name *'),
+                      validator: (v) => AppValidators.validateRequired(v, 'Legal Name'),
+                      enabled: auth.isAdmin,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('GST & Statutory Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -269,12 +521,12 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                           child: TextFormField(
                             controller: _gstinController,
                             decoration: const InputDecoration(
-                              labelText: 'GSTIN Number (15 Digits) *',
+                              labelText: 'Business GSTIN (15 Digits)',
                               hintText: '27AABCF1234F1Z5',
                             ),
-                            enabled: auth.isAdmin,
-                            textCapitalization: TextCapitalization.characters,
                             validator: AppValidators.validateGstin,
+                            textCapitalization: TextCapitalization.characters,
+                            enabled: auth.isAdmin,
                           ),
                         ),
                         const SizedBox(width: 16),
@@ -282,12 +534,12 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                           child: TextFormField(
                             controller: _panController,
                             decoration: const InputDecoration(
-                              labelText: 'PAN Number (10 Characters)',
+                              labelText: 'Company PAN (10 Digits)',
                               hintText: 'AABCF1234F',
                             ),
-                            enabled: auth.isAdmin,
-                            textCapitalization: TextCapitalization.characters,
                             validator: AppValidators.validatePan,
+                            textCapitalization: TextCapitalization.characters,
+                            enabled: auth.isAdmin,
                           ),
                         ),
                       ],
@@ -297,20 +549,18 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
               ),
             ),
             const SizedBox(height: 16),
-
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(20.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Contact & Location', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Contact & Store Address', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _addressController,
-                      decoration: const InputDecoration(labelText: 'Store Address *'),
+                      decoration: const InputDecoration(labelText: 'Store Street Address'),
                       enabled: auth.isAdmin,
-                      validator: (v) => AppValidators.validateRequired(v, 'Address'),
                     ),
                     const SizedBox(height: 16),
                     Row(
@@ -318,28 +568,26 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                         Expanded(
                           child: TextFormField(
                             controller: _cityController,
-                            decoration: const InputDecoration(labelText: 'City *'),
+                            decoration: const InputDecoration(labelText: 'City'),
                             enabled: auth.isAdmin,
-                            validator: (v) => AppValidators.validateRequired(v, 'City'),
                           ),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: TextFormField(
                             controller: _stateController,
-                            decoration: const InputDecoration(labelText: 'State *'),
+                            decoration: const InputDecoration(labelText: 'State'),
                             enabled: auth.isAdmin,
-                            validator: (v) => AppValidators.validateRequired(v, 'State'),
                           ),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: TextFormField(
                             controller: _pincodeController,
-                            decoration: const InputDecoration(labelText: 'Pincode *'),
-                            enabled: auth.isAdmin,
-                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'PIN Code'),
                             validator: AppValidators.validatePincode,
+                            keyboardType: TextInputType.number,
+                            enabled: auth.isAdmin,
                           ),
                         ),
                       ],
@@ -350,20 +598,20 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                         Expanded(
                           child: TextFormField(
                             controller: _phoneController,
-                            decoration: const InputDecoration(labelText: 'Official Mobile / Phone *'),
-                            enabled: auth.isAdmin,
+                            decoration: const InputDecoration(labelText: 'Contact Phone / Mobile'),
+                            validator: AppValidators.validatePhone,
                             keyboardType: TextInputType.phone,
-                            validator: (v) => AppValidators.validatePhone(v, required: true),
+                            enabled: auth.isAdmin,
                           ),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: TextFormField(
                             controller: _emailController,
-                            decoration: const InputDecoration(labelText: 'Official Email Address *'),
-                            enabled: auth.isAdmin,
+                            decoration: const InputDecoration(labelText: 'Contact Email'),
+                            validator: (v) => AppValidators.validateEmail(v),
                             keyboardType: TextInputType.emailAddress,
-                            validator: (v) => AppValidators.validateRequired(v, 'Email'),
+                            enabled: auth.isAdmin,
                           ),
                         ),
                       ],
@@ -372,23 +620,16 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                 ),
               ),
             ),
-            const SizedBox(height: 16),
-
+            const SizedBox(height: 24),
             if (auth.isAdmin)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  FilledButton.icon(
-                    onPressed: settings.isSaving ? null : _saveProfile,
-                    icon: settings.isSaving
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.save),
-                    label: const Text('SAVE PROFILE CHANGES'),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
-                    ),
-                  ),
-                ],
+              FilledButton.icon(
+                onPressed: settings.isSaving ? null : _saveProfile,
+                icon: const Icon(Icons.save),
+                label: Text(settings.isSaving ? 'Saving...' : 'Save Business Profile'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.teal,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                ),
               ),
           ],
         ),
@@ -411,18 +652,11 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.account_balance_outlined, color: Colors.teal),
-                      SizedBox(width: 10),
-                      Text('Configured GST Tax Slabs (India)',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Active tax slabs applied across items in POS register and invoices:',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                  const Text('Active GST Tax Slabs', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Configured tax rates available when adding products and billing at the POS terminal.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 16),
                   Wrap(
@@ -431,88 +665,53 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                     children: gst.availableRates.map((rate) {
                       final isDefault = rate == gst.defaultRate;
                       return Chip(
-                        avatar: CircleAvatar(
-                          backgroundColor: Colors.teal,
-                          child: Text(
-                            '${rate.toStringAsFixed(0)}%',
-                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                          ),
-                        ),
+                        avatar: isDefault ? const Icon(Icons.star, size: 16, color: Colors.teal) : null,
                         label: Text(
                           '$rate% GST ${isDefault ? "(Default)" : ""}',
                           style: TextStyle(fontWeight: isDefault ? FontWeight.bold : FontWeight.normal),
                         ),
-                        deleteIcon: (auth.isAdmin && gst.availableRates.length > 1)
-                            ? const Icon(Icons.close, size: 16)
-                            : null,
-                        onDeleted: (auth.isAdmin && gst.availableRates.length > 1)
-                            ? () async {
-                                await settings.removeGstRate(rate, userId: auth.userId, userName: auth.userName);
-                              }
+                        backgroundColor: isDefault ? Colors.teal.withValues(alpha: 0.15) : null,
+                        deleteIcon: auth.isAdmin && !isDefault ? const Icon(Icons.close, size: 16) : null,
+                        onDeleted: auth.isAdmin && !isDefault
+                            ? () => settings.removeGstRate(rate, userId: auth.userId, userName: auth.userName)
                             : null,
                       );
                     }).toList(),
                   ),
+                  const SizedBox(height: 24),
                   if (auth.isAdmin) ...[
-                    const SizedBox(height: 20),
                     const Divider(),
                     const SizedBox(height: 12),
                     Row(
                       children: [
                         SizedBox(
-                          width: 200,
-                          child: TextFormField(
+                          width: 140,
+                          child: TextField(
                             controller: _newGstRateController,
                             decoration: const InputDecoration(
-                              labelText: 'Add New GST Rate (%)',
-                              hintText: 'e.g. 3 or 40',
+                              labelText: 'New GST Rate',
                               suffixText: '%',
+                              isDense: true,
                             ),
                             keyboardType: const TextInputType.numberWithOptions(decimal: true),
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        FilledButton.tonalIcon(
-                          onPressed: () async {
-                            final rate = double.tryParse(_newGstRateController.text.trim());
-                            if (rate != null && rate >= 0) {
-                              final ok = await settings.addGstRate(rate, userId: auth.userId, userName: auth.userName);
-                              if (ok) _newGstRateController.clear();
+                        const SizedBox(width: 16),
+                        FilledButton.icon(
+                          onPressed: () {
+                            final val = double.tryParse(_newGstRateController.text.trim());
+                            if (val != null && val >= 0) {
+                              settings.addGstRate(val, userId: auth.userId, userName: auth.userName);
+                              _newGstRateController.clear();
                             }
                           },
                           icon: const Icon(Icons.add, size: 18),
-                          label: const Text('Add Rate'),
+                          label: const Text('Add Tax Slab'),
+                          style: FilledButton.styleFrom(backgroundColor: Colors.teal),
                         ),
                       ],
                     ),
                   ],
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Intra-State vs Inter-State GST Rules', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 12),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Intra-State Supply (Same State)'),
-                    subtitle: Text('Taxes split equally as CGST (50%) + SGST (50%) within ${gst.businessState} (Code: ${gst.stateCode})'),
-                    leading: const Icon(Icons.call_split, color: Colors.teal),
-                  ),
-                  const Divider(height: 1),
-                  const ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('Inter-State Supply (Other States)'),
-                    subtitle: Text('Full tax applied as IGST (Integrated GST) automatically when billing out-of-state customers.'),
-                    leading: Icon(Icons.public, color: Colors.blue),
-                  ),
                 ],
               ),
             ),
@@ -522,7 +721,7 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  // --- Tab 3: Invoice Setup ---
+  // --- Tab 3: Invoice Settings ---
   Widget _buildInvoiceTab(BusinessSettingsProvider settings, AuthProvider auth) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24.0),
@@ -535,17 +734,14 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Invoice Numbering & Format', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const Text('Invoice Sequence & Prefix Rules', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 16),
                   Row(
                     children: [
                       Expanded(
                         child: TextFormField(
                           controller: _invoicePrefixController,
-                          decoration: const InputDecoration(
-                            labelText: 'Invoice Number Prefix *',
-                            hintText: 'INV-',
-                          ),
+                          decoration: const InputDecoration(labelText: 'Invoice Prefix (e.g. INV-)'),
                           enabled: auth.isAdmin,
                         ),
                       ),
@@ -553,56 +749,29 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                       Expanded(
                         child: TextFormField(
                           controller: _invoiceStartController,
-                          decoration: const InputDecoration(
-                            labelText: 'Starting Serial Number *',
-                            hintText: '1001',
-                          ),
-                          enabled: auth.isAdmin,
+                          decoration: const InputDecoration(labelText: 'Starting Sequence Number'),
                           keyboardType: TextInputType.number,
+                          enabled: auth.isAdmin,
                         ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.teal.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(8),
+                  if (auth.isAdmin)
+                    FilledButton(
+                      onPressed: _saveProfile,
+                      child: const Text('Save Invoicing Rules'),
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.info_outline, color: Colors.teal, size: 18),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Next generated invoice format preview: ${_invoicePrefixController.text}1001',
-                          style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.teal),
-                        ),
-                      ],
-                    ),
-                  ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          if (auth.isAdmin)
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                FilledButton.icon(
-                  onPressed: _saveProfile,
-                  icon: const Icon(Icons.save),
-                  label: const Text('SAVE INVOICE SETTINGS'),
-                ),
-              ],
-            ),
         ],
       ),
     );
   }
 
-  // --- Tab 4: Payment Methods ---
+  // --- Tab 4: Payment Settings ---
   Widget _buildPaymentTab(BusinessSettingsProvider settings, AuthProvider auth) {
     final pay = settings.paymentSettings;
 
@@ -617,11 +786,11 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Accepted Payment Options in POS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 12),
+                  const Text('Accepted Payment Tender Methods', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 16),
                   SwitchListTile(
                     title: const Text('Cash Payments'),
-                    subtitle: const Text('Enable physical currency tender with cash drawer calculations'),
+                    subtitle: const Text('Accept direct cash transactions with live tender and change computation'),
                     value: pay.enableCash,
                     onChanged: auth.isAdmin
                         ? (val) => settings.savePaymentSettings(pay.copyWith(enableCash: val), userId: auth.userId, userName: auth.userName)
@@ -629,8 +798,8 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                   ),
                   const Divider(height: 1),
                   SwitchListTile(
-                    title: const Text('UPI & Dynamic QR Code'),
-                    subtitle: const Text('Instant BharatPe, GPay, PhonePe, Paytm QR code collection'),
+                    title: const Text('UPI & QR Code Payments'),
+                    subtitle: const Text('Accept instant UPI transfers (BHIM, Google Pay, PhonePe, Paytm)'),
                     value: pay.enableUpi,
                     onChanged: auth.isAdmin
                         ? (val) => settings.savePaymentSettings(pay.copyWith(enableUpi: val), userId: auth.userId, userName: auth.userName)
@@ -638,8 +807,8 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                   ),
                   const Divider(height: 1),
                   SwitchListTile(
-                    title: const Text('Credit / Debit Cards'),
-                    subtitle: const Text('POS swipe / chip terminal integration'),
+                    title: const Text('Debit / Credit Cards'),
+                    subtitle: const Text('Accept POS card terminal transactions'),
                     value: pay.enableCard,
                     onChanged: auth.isAdmin
                         ? (val) => settings.savePaymentSettings(pay.copyWith(enableCard: val), userId: auth.userId, userName: auth.userName)
@@ -744,53 +913,447 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  // --- Tab 6: System & Database Status ---
-  Widget _buildSystemTab(BusinessSettingsProvider settings) {
-    return const SingleChildScrollView(
-      padding: EdgeInsets.all(24.0),
+  // --- Tab 6: Database & Backup/Export Suite ---
+  Widget _buildSystemTab(BusinessSettingsProvider settings, AuthProvider auth) {
+    final inv = context.watch<InventoryProvider>();
+    final cat = context.watch<CategoryProvider>();
+    final cust = context.watch<CustomerProvider>();
+    final sales = context.watch<SalesProvider>();
+    final logs = context.watch<AuditLogProvider>();
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Database Explorer Live Action Card
           Card(
+            color: Colors.teal.shade50,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.teal.shade200)),
             child: Padding(
-              padding: EdgeInsets.all(20.0),
+              padding: const EdgeInsets.all(20.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.verified_user_outlined, color: Colors.green),
-                      SizedBox(width: 10),
-                      Text('System & Database Connectivity',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      const Icon(Icons.table_chart, color: Colors.teal, size: 28),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('📊 Live Database Explorer & Data Viewer', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Colors.teal)),
+                            const SizedBox(height: 2),
+                            Text('Directly view, browse, search, and copy data from all collections stored in your local NoSQL database.', style: TextStyle(fontSize: 12, color: Colors.teal.shade800)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        onPressed: () => _showDirectDatabaseExplorer(context),
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        label: const Text('Open Database Explorer'),
+                        style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12)),
+                      ),
                     ],
                   ),
-                  SizedBox(height: 16),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.speed, color: Colors.teal),
-                    title: Text('Database Engine Mode'),
-                    subtitle: Text('Reactive High-Performance Dual Engine (Firestore + In-Memory Synchronous Cache)'),
+                  const Divider(height: 28),
+                  // Live Collection Summary Row
+                  Row(
+                    children: [
+                      _buildSummaryStatPill('📦 Products', '${inv.allProducts.length} Items', Colors.teal),
+                      const SizedBox(width: 10),
+                      _buildSummaryStatPill('🏷️ Categories', '${cat.categories.length} Taxonomies', Colors.blue),
+                      const SizedBox(width: 10),
+                      _buildSummaryStatPill('👥 Customers', '${cust.allCustomers.length} Accounts', Colors.indigo),
+                      const SizedBox(width: 10),
+                      _buildSummaryStatPill('🧾 Invoices', '${sales.allInvoices.length} Bills', Colors.deepOrange),
+                      const SizedBox(width: 10),
+                      _buildSummaryStatPill('📑 Audit Trail', '${logs.allLogs.length} Events', Colors.purple),
+                    ],
                   ),
-                  Divider(height: 1),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.security, color: Colors.blue),
-                    title: Text('Security & Access Protection'),
-                    subtitle: Text('Role-Based Access Control Active (Admin, Manager, Cashier with Firestore Security Rules)'),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Database Engine Card
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.storage, color: Colors.teal),
+                      SizedBox(width: 10),
+                      Text('Local NoSQL Storage & Engine Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    ],
                   ),
-                  Divider(height: 1),
-                  ListTile(
+                  const SizedBox(height: 16),
+                  const ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.history_toggle_off, color: Colors.deepOrange),
-                    title: Text('Audit Trail & Logging'),
-                    subtitle: Text('Active immutable event stream for all business transactions, stock changes, and cancellations'),
+                    leading: Icon(Icons.bolt, color: Colors.green),
+                    title: Text('Isar Community NoSQL Engine v3 (Offline-First)'),
+                    subtitle: Text('Direct memory-mapped ACID local storage with zero cloud bills and sub-millisecond query speed'),
+                  ),
+                  const Divider(height: 1),
+                  const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.shield_outlined, color: Colors.blue),
+                    title: Text('PBKDF2-HMAC-SHA256 Cryptographic Authentication'),
+                    subtitle: Text('10,000 hashing iterations, 16-byte random salts, Role-Based Access Control (Owner, Admin, Manager, Cashier)'),
+                  ),
+                  const Divider(height: 1),
+                  const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.folder_open, color: Colors.amber),
+                    title: Text('Local Project & Database Directory'),
+                    subtitle: SelectableText(
+                      '📁 Database: /Users/niyamdbohra/Desktop/Smart_GST_POS/database_data/\n'
+                      '💾 DB File: smart_gst_pos_db.isar\n'
+                      '📦 Backups: /Users/niyamdbohra/Desktop/Smart_GST_POS/backups/\n'
+                      '📊 Exports: /Users/niyamdbohra/Desktop/Smart_GST_POS/exports/',
+                      style: TextStyle(fontFamily: 'monospace', fontSize: 11, height: 1.4),
+                    ),
+                  ),
+                  if (_lastOperationResult != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.teal.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.teal.withValues(alpha: 0.3)),
+                      ),
+                      child: Text(
+                        _lastOperationResult!,
+                        style: const TextStyle(fontSize: 12, color: Colors.teal, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Firebase Authentication Status Card
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(color: Colors.amber.shade50, borderRadius: BorderRadius.circular(8)),
+                        child: const Icon(Icons.local_fire_department, color: Colors.amber, size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('🔥 Firebase Authentication', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                            const SizedBox(height: 2),
+                            Text('Auth Provider: ${auth.authProviderType} • User: ${auth.userName} (${auth.userEmail})', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: auth.isAuthenticated ? Colors.green.shade50 : Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: auth.isAuthenticated ? Colors.green : Colors.grey),
+                        ),
+                        child: Text(
+                          auth.isAuthenticated ? '● Active Session' : '○ Signed Out',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: auth.isAuthenticated ? Colors.green[800] : Colors.grey[700]),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // AWS DynamoDB Cloud Database & Synchronization Card
+          Builder(
+            builder: (context) {
+              final aws = context.watch<AWSDynamoDBProvider>();
+              return Card(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.orange.shade200)),
+                child: Padding(
+                  padding: const EdgeInsets.all(20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(8)),
+                            child: const Icon(Icons.cloud_sync_outlined, color: Colors.deepOrange, size: 24),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('⚡ AWS DynamoDB Cloud Database & Live Sync', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                const SizedBox(height: 2),
+                                Text(
+                                  aws.isConnected
+                                      ? 'Connected to DynamoDB (${aws.config.region}) • ${aws.remoteTables.length} tables found'
+                                      : 'Connect your POS to Amazon DynamoDB NoSQL for multi-terminal cloud sync and remote backups',
+                                  style: TextStyle(fontSize: 12, color: aws.isConnected ? Colors.green[700] : Colors.grey[600]),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: aws.isConnected ? Colors.green.shade50 : Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: aws.isConnected ? Colors.green : Colors.orange),
+                            ),
+                            child: Text(
+                              aws.isConnected ? '● Connected' : '○ Disconnected',
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: aws.isConnected ? Colors.green[800] : Colors.orange[800]),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 24),
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 2,
+                            child: TextFormField(
+                              controller: _awsRegionController,
+                              decoration: const InputDecoration(
+                                labelText: 'AWS Region',
+                                hintText: 'ap-south-1 (Mumbai)',
+                                prefixIcon: Icon(Icons.public, size: 18),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            flex: 2,
+                            child: TextFormField(
+                              controller: _awsTablePrefixController,
+                              decoration: const InputDecoration(
+                                labelText: 'Table Prefix',
+                                hintText: 'smart_gst_',
+                                prefixIcon: Icon(Icons.table_rows, size: 18),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _awsAccessKeyController,
+                        decoration: const InputDecoration(
+                          labelText: 'AWS Access Key ID',
+                          hintText: 'AKIAIOSFODNN7EXAMPLE',
+                          prefixIcon: Icon(Icons.key, size: 18),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _awsSecretKeyController,
+                        obscureText: _obscureAwsSecret,
+                        decoration: InputDecoration(
+                          labelText: 'AWS Secret Access Key',
+                          hintText: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+                          prefixIcon: const Icon(Icons.lock_outline, size: 18),
+                          suffixIcon: IconButton(
+                            icon: Icon(_obscureAwsSecret ? Icons.visibility : Icons.visibility_off, size: 18),
+                            onPressed: () => setState(() => _obscureAwsSecret = !_obscureAwsSecret),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: aws.isConnecting ? null : _saveAwsConfig,
+                            icon: aws.isConnecting
+                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Icon(Icons.link, size: 16),
+                            label: Text(aws.isConnecting ? 'Testing...' : 'Save & Test Connection'),
+                            style: FilledButton.styleFrom(backgroundColor: Colors.deepOrange),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: aws.isConnecting ? null : _provisionAwsTables,
+                            icon: const Icon(Icons.add_to_photos_outlined, size: 16),
+                            label: const Text('Provision Cloud Tables'),
+                          ),
+                          FilledButton.tonalIcon(
+                            onPressed: (aws.isSyncing || !aws.config.isConfigured) ? null : _syncToAwsDynamoDB,
+                            icon: aws.isSyncing
+                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Icon(Icons.cloud_upload_outlined, size: 16),
+                            label: Text(aws.isSyncing ? 'Syncing to Cloud...' : '☁️ Sync All Collections to DynamoDB'),
+                          ),
+                        ],
+                      ),
+                      if (aws.lastError != null) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.shade200)),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.error_outline, size: 16, color: Colors.red),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(aws.lastError!, style: const TextStyle(fontSize: 12, color: Colors.red, fontWeight: FontWeight.bold))),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // Backup & Restore Card
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.backup_outlined, color: Colors.blueAccent),
+                      SizedBox(width: 10),
+                      Text('Portable Database Backup (JSON)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Create full, sanitized, portable JSON snapshots of products, customers, invoices, ledger, and business settings. Password hashes are excluded for security.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _isProcessingBackup ? null : _handleCreateBackup,
+                        icon: const Icon(Icons.file_download_outlined),
+                        label: const Text('Create Full Backup (.json)'),
+                        style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () => showDatabaseExplorerDialog(context),
+                        icon: const Icon(Icons.table_chart, size: 18),
+                        label: const Text('Explore Database Tables'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Data Export Suite (CSV)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.file_present_outlined, color: Colors.deepOrange),
+                      SizedBox(width: 10),
+                      Text('Excel-Compatible CSV Data Exports', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Export business collections to RFC 4180 CSV with UTF-8 BOM encoding for direct opening in Microsoft Excel or Pandas/PowerBI.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _isProcessingBackup ? null : () => _handleExportCsv('products'),
+                        icon: const Icon(Icons.inventory_2_outlined, size: 18),
+                        label: const Text('Products.csv'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isProcessingBackup ? null : () => _handleExportCsv('customers'),
+                        icon: const Icon(Icons.people_outline, size: 18),
+                        label: const Text('Customers.csv'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isProcessingBackup ? null : () => _handleExportCsv('invoices'),
+                        icon: const Icon(Icons.receipt_outlined, size: 18),
+                        label: const Text('Invoices.csv'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isProcessingBackup ? null : () => _handleExportCsv('movements'),
+                        icon: const Icon(Icons.swap_horiz, size: 18),
+                        label: const Text('StockMovements.csv'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isProcessingBackup ? null : () => _handleExportCsv('audit'),
+                        icon: const Icon(Icons.history, size: 18),
+                        label: const Text('AuditLogs.csv'),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryStatPill(String title, String value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
+            const SizedBox(height: 2),
+            Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900)),
+          ],
+        ),
       ),
     );
   }

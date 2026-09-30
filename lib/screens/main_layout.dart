@@ -14,6 +14,7 @@ import 'staff/staff_screen.dart';
 import 'audit/audit_log_screen.dart';
 import 'settings/settings_screen.dart';
 import '../widgets/database_explorer_dialog.dart';
+import '../widgets/supabase_todos_dialog.dart';
 
 class MainLayout extends StatefulWidget {
   const MainLayout({super.key});
@@ -174,6 +175,24 @@ class _MainLayoutState extends State<MainLayout> {
                   style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.teal),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(width: 8),
+
+          // Supabase Todos & Cloud Quick Launcher
+          FilledButton.tonalIcon(
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (ctx) => const SupabaseTodosDialog(),
+              );
+            },
+            icon: const Icon(Icons.cloud_done, size: 16, color: Color(0xFF3ECF8E)),
+            label: const Text('Supabase Cloud', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              backgroundColor: const Color(0xFF3ECF8E).withValues(alpha: 0.12),
+              foregroundColor: Colors.teal[900],
             ),
           ),
           const SizedBox(width: 8),

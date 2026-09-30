@@ -2,6 +2,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'database/database_service.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
@@ -32,6 +33,20 @@ void main() async {
     );
   } catch (e) {
     debugPrint('Firebase.initializeApp notice: $e');
+  }
+
+  // 2. Initialize Supabase Cloud Database
+  try {
+    await Supabase.initialize(
+      url: 'https://wbpswfhlexswukzfhirq.supabase.co',
+      // ignore: deprecated_member_use
+      anonKey: 'sb_publishable_xj8vseaa8sJU6Q1bP99kUw_I-wEucCw',
+    );
+    if (kDebugMode) {
+      print('✅ Supabase Cloud initialized successfully.');
+    }
+  } catch (e) {
+    debugPrint('Supabase.initialize notice: $e');
   }
 
   bool isDbReady = false;

@@ -18,6 +18,7 @@ import '../../services/export_service.dart';
 import '../../services/backup_service.dart';
 import '../../utils/validators.dart';
 import '../../widgets/database_explorer_dialog.dart';
+import '../../utils/supabase_schema_sql.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -349,6 +350,70 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
+  void _showSqlMigrationDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.schema_outlined, color: Colors.teal),
+            SizedBox(width: 8),
+            Text('Supabase PostgreSQL Schema Setup (PGRST205 Fix)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ],
+        ),
+        content: SizedBox(
+          width: 650,
+          height: 440,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blue.shade200)),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 18, color: Colors.blue),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'To fix PGRST205: Copy this script, open your Supabase SQL Editor, paste it, and click "Run". This creates all tables (products, customers, invoices, invoice_items, profiles, todos) with Row Level Security.',
+                        style: TextStyle(fontSize: 12, color: Colors.blue),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(8)),
+                  child: const SingleChildScrollView(
+                    child: SelectableText(posSchemaSql, style: TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          OutlinedButton.icon(
+            onPressed: () {
+              Clipboard.setData(const ClipboardData(text: posSchemaSql));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✓ SQL migration copied to clipboard!')));
+            },
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('📋 Copy SQL Script'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _syncToSupabase() async {
     setState(() => _isSyncingSupabase = true);
     final auth = context.read<AuthProvider>();
@@ -379,13 +444,18 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Supabase sync notice: $e'),
-            backgroundColor: Colors.orange[800],
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        final errStr = e.toString();
+        if (errStr.contains('PGRST205') || errStr.contains('schema cache')) {
+          _showSqlMigrationDialog();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Supabase sync notice: $e'),
+              backgroundColor: Colors.orange[800],
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
       }
     } finally {
       if (mounted) setState(() => _isSyncingSupabase = false);
@@ -1145,6 +1215,11 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                         onPressed: _openSupabaseExplorer,
                         icon: const Icon(Icons.table_view_outlined, size: 16),
                         label: const Text('🔍 Explore Supabase Tables'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _showSqlMigrationDialog,
+                        icon: const Icon(Icons.code, size: 16),
+                        label: const Text('📄 SQL Schema Setup (PGRST205 Fix)'),
                       ),
                     ],
                   ),

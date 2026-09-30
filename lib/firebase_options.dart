@@ -34,37 +34,42 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyDemoPlaceholderForWebApiKey123',
-    appId: '1:1234567890:web:abcdef123456',
-    messagingSenderId: '1234567890',
-    projectId: 'flutter-pos-demo',
-    authDomain: 'flutter-pos-demo.firebaseapp.com',
-    storageBucket: 'flutter-pos-demo.appspot.com',
+    apiKey: 'AIzaSyCbspnA7E1wFxoOPY9wmIyQM8_6OhoGXIs',
+    appId: '1:176637569015:web:b81e799c4fe438af8d70f2',
+    messagingSenderId: '176637569015',
+    projectId: 'unismart-709d2',
+    authDomain: 'unismart-709d2.firebaseapp.com',
+    databaseURL: 'https://unismart-709d2-default-rtdb.asia-southeast1.firebasedatabase.app',
+    storageBucket: 'unismart-709d2.firebasestorage.app',
+    measurementId: 'G-KRVYWDC5MW',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyDemoPlaceholderForAndroidApiKey123',
-    appId: '1:1234567890:android:abcdef123456',
-    messagingSenderId: '1234567890',
-    projectId: 'flutter-pos-demo',
-    storageBucket: 'flutter-pos-demo.appspot.com',
+    apiKey: 'AIzaSyCbspnA7E1wFxoOPY9wmIyQM8_6OhoGXIs',
+    appId: '1:176637569015:android:4898ae930f1a42a68d70f2',
+    messagingSenderId: '176637569015',
+    projectId: 'unismart-709d2',
+    databaseURL: 'https://unismart-709d2-default-rtdb.asia-southeast1.firebasedatabase.app',
+    storageBucket: 'unismart-709d2.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyDemoPlaceholderForIosApiKey123',
-    appId: '1:1234567890:ios:abcdef123456',
-    messagingSenderId: '1234567890',
-    projectId: 'flutter-pos-demo',
-    storageBucket: 'flutter-pos-demo.appspot.com',
+    apiKey: 'AIzaSyCbspnA7E1wFxoOPY9wmIyQM8_6OhoGXIs',
+    appId: '1:176637569015:ios:abcdef123456',
+    messagingSenderId: '176637569015',
+    projectId: 'unismart-709d2',
+    databaseURL: 'https://unismart-709d2-default-rtdb.asia-southeast1.firebasedatabase.app',
+    storageBucket: 'unismart-709d2.firebasestorage.app',
     iosBundleId: 'com.example.flutterPos',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyDemoPlaceholderForMacOsApiKey123',
-    appId: '1:1234567890:ios:abcdef123456',
-    messagingSenderId: '1234567890',
-    projectId: 'flutter-pos-demo',
-    storageBucket: 'flutter-pos-demo.appspot.com',
+    apiKey: 'AIzaSyCbspnA7E1wFxoOPY9wmIyQM8_6OhoGXIs',
+    appId: '1:176637569015:ios:abcdef123456',
+    messagingSenderId: '176637569015',
+    projectId: 'unismart-709d2',
+    databaseURL: 'https://unismart-709d2-default-rtdb.asia-southeast1.firebasedatabase.app',
+    storageBucket: 'unismart-709d2.firebasestorage.app',
     iosBundleId: 'com.example.flutterPos',
   );
 }

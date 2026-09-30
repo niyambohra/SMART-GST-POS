@@ -171,7 +171,7 @@ class _MainLayoutState extends State<MainLayout> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  auth.firebaseUid != null ? 'Cloud: Connected' : 'Firebase: Active',
+                  auth.firebaseUid != null ? 'Supabase Cloud: Connected' : 'Firebase Auth: Ready',
                   style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.teal),
                 ),
               ],

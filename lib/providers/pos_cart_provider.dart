@@ -344,7 +344,7 @@ class POSCartProvider with ChangeNotifier {
 
     _isProcessing = true;
     _lastError = null;
-    _syncStatus = 'Saving to AWS DynamoDB...';
+    _syncStatus = 'Saving to Supabase PostgreSQL...';
     notifyListeners();
 
     try {

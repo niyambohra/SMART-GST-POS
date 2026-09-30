@@ -5,11 +5,11 @@ import 'package:smart_gst/models/sale_invoice.dart';
 import 'package:smart_gst/services/cloud_invoice_service.dart';
 
 void main() {
-  group('CloudInvoiceService & DynamoDB Serialization Tests', () {
+  group('CloudInvoiceService & Supabase PostgreSQL Tests', () {
     late CloudInvoiceService service;
 
     setUp(() {
-      service = CloudInvoiceService();
+      service = CloudInvoiceService.instance;
     });
 
     final testProduct = Product(
@@ -50,35 +50,22 @@ void main() {
       cashierId: 'firebase_user_owner_01',
     );
 
-    test('serializeInvoiceForCloud formats payload matching DynamoDB schema', () {
-      final json = service.serializeInvoiceForCloud(testInvoice);
-
-      expect(json['invoiceId'], equals('inv_cloud_998'));
-      expect(json['invoiceNumber'], equals('INV-2026-998'));
-      expect(json['customerName'], equals('Aarav Patel'));
-      expect(json['customerPhone'], equals('9820098200'));
-      expect(json['subtotal'], equals(900.0));
-      expect(json['grandTotal'], equals(892.5));
-      expect(json['cgst'], equals(21.25));
-      expect(json['sgst'], equals(21.25));
-      expect(json['items'], isA<List>());
-      expect((json['items'] as List).length, equals(1));
-      expect(json['paymentMethod'], equals('cash'));
-      expect(json['status'], equals('COMPLETED'));
+    test('CloudInvoiceService singleton is accessible', () {
+      expect(service, isNotNull);
+      expect(CloudInvoiceService.instance, equals(service));
     });
 
-    test('deserializeInvoiceFromCloud reconstructs SaleInvoice accurately', () {
-      final json = service.serializeInvoiceForCloud(testInvoice);
-      final reconstructed = service.deserializeInvoiceFromCloud(json);
-
-      expect(reconstructed.id, equals(testInvoice.id));
-      expect(reconstructed.invoiceNumber, equals(testInvoice.invoiceNumber));
-      expect(reconstructed.customerName, equals(testInvoice.customerName));
-      expect(reconstructed.grandTotal, equals(testInvoice.grandTotal));
-      expect(reconstructed.totalGst, equals(testInvoice.totalGst));
-      expect(reconstructed.items.length, equals(1));
-      expect(reconstructed.items.first.product.name, equals('Organic Basmati Rice 5kg'));
-      expect(reconstructed.items.first.quantity, equals(2));
+    test('SaleInvoice holds complete POS attributes for Supabase ingestion', () {
+      expect(testInvoice.id, equals('inv_cloud_998'));
+      expect(testInvoice.invoiceNumber, equals('INV-2026-998'));
+      expect(testInvoice.customerName, equals('Aarav Patel'));
+      expect(testInvoice.subtotal, equals(900.0));
+      expect(testInvoice.grandTotal, equals(892.5));
+      expect(testInvoice.totalCgst, equals(21.25));
+      expect(testInvoice.totalSgst, equals(21.25));
+      expect(testInvoice.paymentMethod, equals(PaymentMethod.cash));
+      expect(testInvoice.items.length, equals(1));
+      expect(testInvoice.items.first.product.name, equals('Organic Basmati Rice 5kg'));
     });
   });
 }

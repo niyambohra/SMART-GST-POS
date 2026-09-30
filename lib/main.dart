@@ -6,7 +6,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'database/database_service.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
-import 'providers/aws_dynamodb_provider.dart';
 import 'providers/business_settings_provider.dart';
 import 'providers/category_provider.dart';
 import 'providers/customer_provider.dart';
@@ -98,7 +97,6 @@ class SmartGSTPOSApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider(authService: authService)),
-        ChangeNotifierProvider(create: (_) => AWSDynamoDBProvider()),
         ChangeNotifierProvider(create: (_) => BusinessSettingsProvider(service: posService)),
         ChangeNotifierProvider(create: (_) => CategoryProvider(service: posService)),
         ChangeNotifierProvider(create: (_) => CustomerProvider(service: posService)),

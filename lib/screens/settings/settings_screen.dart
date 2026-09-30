@@ -11,7 +11,9 @@ import '../../providers/category_provider.dart';
 import '../../providers/customer_provider.dart';
 import '../../providers/sales_provider.dart';
 import '../../providers/audit_log_provider.dart';
-import '../../providers/aws_dynamodb_provider.dart';
+import '../../services/supabase_service.dart';
+import '../../services/supabase_database_service.dart';
+import '../../widgets/supabase_todos_dialog.dart';
 import '../../services/export_service.dart';
 import '../../services/backup_service.dart';
 import '../../utils/validators.dart';
@@ -52,15 +54,9 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
   // Payment Controllers
   late TextEditingController _upiIdController;
 
-  // AWS DynamoDB Controllers
-  late TextEditingController _awsAccessKeyController;
-  late TextEditingController _awsSecretKeyController;
-  late TextEditingController _awsRegionController;
-  late TextEditingController _awsTablePrefixController;
-  bool _obscureAwsSecret = true;
-
   bool _initialized = false;
   bool _isProcessingBackup = false;
+  bool _isSyncingSupabase = false;
   String? _lastOperationResult;
 
   @override
@@ -93,12 +89,6 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
     final pay = settings.paymentSettings;
     _upiIdController = TextEditingController(text: pay.upiId);
-
-    final aws = context.read<AWSDynamoDBProvider>().config;
-    _awsAccessKeyController = TextEditingController(text: aws.accessKeyId);
-    _awsSecretKeyController = TextEditingController(text: aws.secretAccessKey);
-    _awsRegionController = TextEditingController(text: aws.region);
-    _awsTablePrefixController = TextEditingController(text: aws.tablePrefix);
   }
 
   @override
@@ -121,10 +111,6 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
       _invoiceStartController.dispose();
       _newGstRateController.dispose();
       _upiIdController.dispose();
-      _awsAccessKeyController.dispose();
-      _awsSecretKeyController.dispose();
-      _awsRegionController.dispose();
-      _awsTablePrefixController.dispose();
     }
     super.dispose();
   }
@@ -356,82 +342,53 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  void _showDirectDatabaseExplorer(BuildContext context) {
-    showDatabaseExplorerDialog(context);
-  }
-
-  void _saveAwsConfig() async {
-    final aws = context.read<AWSDynamoDBProvider>();
-    final success = await aws.saveConfig(
-      accessKeyId: _awsAccessKeyController.text,
-      secretAccessKey: _awsSecretKeyController.text,
-      region: _awsRegionController.text.isNotEmpty ? _awsRegionController.text : 'ap-south-1',
-      tablePrefix: _awsTablePrefixController.text,
+  void _openSupabaseExplorer() {
+    showDialog(
+      context: context,
+      builder: (ctx) => const SupabaseTodosDialog(),
     );
-
-    if (!mounted) return;
-    if (success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✓ Connected to AWS DynamoDB in ${aws.config.region}! Found ${aws.remoteTables.length} tables.'),
-          backgroundColor: Colors.green[700],
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⚠️ AWS Connection Notice: ${aws.lastError}'),
-          backgroundColor: Colors.orange[800],
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
   }
 
-  void _provisionAwsTables() async {
-    final aws = context.read<AWSDynamoDBProvider>();
-    final ok = await aws.provisionTables();
-    if (!mounted) return;
-    if (ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✓ Standard DynamoDB tables provisioned successfully (products, categories, customers, invoices, audit_logs)!'),
-          backgroundColor: Colors.teal,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Provisioning error: ${aws.lastError}'),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
+  void _syncToSupabase() async {
+    setState(() => _isSyncingSupabase = true);
+    final auth = context.read<AuthProvider>();
+    final inventory = context.read<InventoryProvider>();
+    final customer = context.read<CustomerProvider>();
+    final sales = context.read<SalesProvider>();
 
-  void _syncToAwsDynamoDB() async {
-    final aws = context.read<AWSDynamoDBProvider>();
-    final result = await aws.syncToCloud();
-    if (!mounted) return;
-    if (result.isSuccess) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✓ Synced to AWS DynamoDB: ${result.productsSynced} products, ${result.categoriesSynced} categories, ${result.customersSynced} customers, ${result.invoicesSynced} invoices!'),
-          backgroundColor: Colors.green[700],
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Sync error: ${result.errorMessage}'),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    try {
+      final uid = auth.userId;
+      for (final p in inventory.allProducts) {
+        await SupabaseDatabaseService.instance.createProduct(p, userId: uid);
+      }
+      for (final c in customer.allCustomers) {
+        await SupabaseDatabaseService.instance.createCustomer(c, userId: uid);
+      }
+      for (final inv in sales.allInvoices) {
+        await SupabaseDatabaseService.instance.createInvoice(inv, userId: uid);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ Synced to Supabase PostgreSQL: ${inventory.allProducts.length} products, ${customer.allCustomers.length} customers, ${sales.allInvoices.length} invoices!'),
+            backgroundColor: Colors.teal[800],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Supabase sync notice: $e'),
+            backgroundColor: Colors.orange[800],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncingSupabase = false);
     }
   }
 
@@ -951,7 +908,7 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                       ),
                       const SizedBox(width: 12),
                       FilledButton.icon(
-                        onPressed: () => _showDirectDatabaseExplorer(context),
+                        onPressed: () => showDatabaseExplorerDialog(context),
                         icon: const Icon(Icons.open_in_new, size: 18),
                         label: const Text('Open Database Explorer'),
                         style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12)),
@@ -1086,151 +1043,114 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
           ),
           const SizedBox(height: 16),
 
-          // AWS DynamoDB Cloud Database & Synchronization Card
-          Builder(
-            builder: (context) {
-              final aws = context.watch<AWSDynamoDBProvider>();
-              return Card(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.orange.shade200)),
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+          // Supabase PostgreSQL Cloud Database & Synchronization Card
+          Card(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.teal.shade200)),
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(8)),
-                            child: const Icon(Icons.cloud_sync_outlined, color: Colors.deepOrange, size: 24),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('⚡ AWS DynamoDB Cloud Database & Live Sync', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                const SizedBox(height: 2),
-                                Text(
-                                  aws.isConnected
-                                      ? 'Connected to DynamoDB (${aws.config.region}) • ${aws.remoteTables.length} tables found'
-                                      : 'Connect your POS to Amazon DynamoDB NoSQL for multi-terminal cloud sync and remote backups',
-                                  style: TextStyle(fontSize: 12, color: aws.isConnected ? Colors.green[700] : Colors.grey[600]),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: aws.isConnected ? Colors.green.shade50 : Colors.orange.shade50,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: aws.isConnected ? Colors.green : Colors.orange),
-                            ),
-                            child: Text(
-                              aws.isConnected ? '● Connected' : '○ Disconnected',
-                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: aws.isConnected ? Colors.green[800] : Colors.orange[800]),
-                            ),
-                          ),
-                        ],
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(color: Colors.teal.shade50, borderRadius: BorderRadius.circular(8)),
+                        child: const Icon(Icons.cloud_sync, color: Colors.teal, size: 24),
                       ),
-                      const Divider(height: 24),
-                      Row(
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: TextFormField(
-                              controller: _awsRegionController,
-                              decoration: const InputDecoration(
-                                labelText: 'AWS Region',
-                                hintText: 'ap-south-1 (Mumbai)',
-                                prefixIcon: Icon(Icons.public, size: 18),
-                              ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('⚡ Supabase PostgreSQL Cloud Database & Live Sync', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                            const SizedBox(height: 2),
+                            Text(
+                              SupabaseService.instance.isInitialized
+                                  ? 'Connected to Supabase Project: UNIBILLS • Relational PostgreSQL + Row Level Security'
+                                  : 'Connect your POS to Supabase PostgreSQL for cloud sync and remote backups',
+                              style: TextStyle(fontSize: 12, color: SupabaseService.instance.isInitialized ? Colors.teal[800] : Colors.grey[600]),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            flex: 2,
-                            child: TextFormField(
-                              controller: _awsTablePrefixController,
-                              decoration: const InputDecoration(
-                                labelText: 'Table Prefix',
-                                hintText: 'smart_gst_',
-                                prefixIcon: Icon(Icons.table_rows, size: 18),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _awsAccessKeyController,
-                        decoration: const InputDecoration(
-                          labelText: 'AWS Access Key ID',
-                          hintText: 'AKIAIOSFODNN7EXAMPLE',
-                          prefixIcon: Icon(Icons.key, size: 18),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _awsSecretKeyController,
-                        obscureText: _obscureAwsSecret,
-                        decoration: InputDecoration(
-                          labelText: 'AWS Secret Access Key',
-                          hintText: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
-                          prefixIcon: const Icon(Icons.lock_outline, size: 18),
-                          suffixIcon: IconButton(
-                            icon: Icon(_obscureAwsSecret ? Icons.visibility : Icons.visibility_off, size: 18),
-                            onPressed: () => setState(() => _obscureAwsSecret = !_obscureAwsSecret),
-                          ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: SupabaseService.instance.isInitialized ? Colors.teal.shade50 : Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: SupabaseService.instance.isInitialized ? Colors.teal : Colors.orange),
+                        ),
+                        child: Text(
+                          SupabaseService.instance.isInitialized ? '● Connected' : '○ Disconnected',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: SupabaseService.instance.isInitialized ? Colors.teal[800] : Colors.orange[800]),
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: [
-                          FilledButton.icon(
-                            onPressed: aws.isConnecting ? null : _saveAwsConfig,
-                            icon: aws.isConnecting
-                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : const Icon(Icons.link, size: 16),
-                            label: Text(aws.isConnecting ? 'Testing...' : 'Save & Test Connection'),
-                            style: FilledButton.styleFrom(backgroundColor: Colors.deepOrange),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: aws.isConnecting ? null : _provisionAwsTables,
-                            icon: const Icon(Icons.add_to_photos_outlined, size: 16),
-                            label: const Text('Provision Cloud Tables'),
-                          ),
-                          FilledButton.tonalIcon(
-                            onPressed: (aws.isSyncing || !aws.config.isConfigured) ? null : _syncToAwsDynamoDB,
-                            icon: aws.isSyncing
-                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                                : const Icon(Icons.cloud_upload_outlined, size: 16),
-                            label: Text(aws.isSyncing ? 'Syncing to Cloud...' : '☁️ Sync All Collections to DynamoDB'),
-                          ),
-                        ],
-                      ),
-                      if (aws.lastError != null) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.shade200)),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.error_outline, size: 16, color: Colors.red),
-                              const SizedBox(width: 8),
-                              Expanded(child: Text(aws.lastError!, style: const TextStyle(fontSize: 12, color: Colors.red, fontWeight: FontWeight.bold))),
-                            ],
-                          ),
-                        ),
-                      ],
                     ],
                   ),
-                ),
-              );
-            },
+                  const Divider(height: 24),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.link, size: 16, color: Colors.teal),
+                            SizedBox(width: 8),
+                            Text('Cloud Endpoint: ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            SelectableText('https://wbpswfhlexswukzfhirq.supabase.co', style: TextStyle(fontSize: 12, fontFamily: 'monospace')),
+                          ],
+                        ),
+                        SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Icon(Icons.security, size: 16, color: Colors.teal),
+                            SizedBox(width: 8),
+                            Text('Security Architecture: ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            Text('Firebase ID Token Authentication + PostgreSQL Row Level Security (RLS)', style: TextStyle(fontSize: 12)),
+                          ],
+                        ),
+                        SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Icon(Icons.table_chart_outlined, size: 16, color: Colors.teal),
+                            SizedBox(width: 8),
+                            Text('Cloud Tables: ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            Text('profiles, products, customers, invoices, invoice_items', style: TextStyle(fontSize: 12, fontFamily: 'monospace')),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _isSyncingSupabase ? null : _syncToSupabase,
+                        icon: _isSyncingSupabase
+                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Icon(Icons.cloud_upload_outlined, size: 16),
+                        label: Text(_isSyncingSupabase ? 'Syncing to Supabase...' : '☁️ Sync All Collections to Supabase'),
+                        style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _openSupabaseExplorer,
+                        icon: const Icon(Icons.table_view_outlined, size: 16),
+                        label: const Text('🔍 Explore Supabase Tables'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 16),
 

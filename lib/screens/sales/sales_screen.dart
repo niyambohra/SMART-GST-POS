@@ -78,7 +78,7 @@ class _SalesScreenState extends State<SalesScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Transaction ledger, tax receipts, and payment settlements from AWS DynamoDB',
+                        'Transaction ledger, tax receipts, and payment settlements from Supabase PostgreSQL',
                         style: TextStyle(color: Colors.grey[600], fontSize: 13),
                       ),
                     ],
@@ -93,7 +93,7 @@ class _SalesScreenState extends State<SalesScreen> {
                                 if (context.mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
-                                      content: Text('✓ Invoices refreshed from AWS DynamoDB'),
+                                      content: Text('✓ Invoices refreshed from Supabase PostgreSQL'),
                                       duration: Duration(seconds: 2),
                                       behavior: SnackBarBehavior.floating,
                                     ),
@@ -107,7 +107,7 @@ class _SalesScreenState extends State<SalesScreen> {
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Icon(Icons.refresh, size: 18),
-                        label: Text(sales.isLoading ? 'Syncing...' : 'Refresh from AWS'),
+                        label: Text(sales.isLoading ? 'Syncing...' : 'Refresh from Supabase'),
                       ),
                     ],
                   ),

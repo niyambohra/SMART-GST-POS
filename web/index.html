@@ -42,7 +42,15 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script>
-    // Ensure fresh code is loaded on every browser refresh
+    // 1. Wipe out any CacheStorage caches
+    if ('caches' in window) {
+      caches.keys().then(function(names) {
+        for (var name of names) {
+          caches.delete(name);
+        }
+      });
+    }
+    // 2. Unregister any existing service workers immediately
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.getRegistrations().then(function(registrations) {
         for (var registration of registrations) {
@@ -51,6 +59,6 @@
       });
     }
   </script>
-  <script src="flutter_bootstrap.js" async></script>
+  <script src="flutter_bootstrap.js?v=20260930_v3" async></script>
 </body>
 </html>
